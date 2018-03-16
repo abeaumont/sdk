@@ -20,11 +20,21 @@ var (
 const (
 	KeyType  = "@type"  // InternalType
 	KeyToken = "@token" // Token
-	KeyRoles = "@role"  // Roles, represented as List(Int(role1), Int(role2))
+	KeyRoles = "@role"  // Roles, for representations see RoleList
 	// TODO: a single @pos field with "start" and "end" fields?
 	KeyStart = "@start" // StartPosition
 	KeyEnd   = "@end"   // EndPosition
 )
+
+// NewNode creates a default AST node with Unannotated role.
+func NewNode() Object {
+	return Object{KeyRoles: RoleList(role.Unannotated)}
+}
+
+// EmptyNode creates a new empty node with no fields.
+func EmptyNode() Object {
+	return Object{}
+}
 
 // Node is a generic interface for structures used in AST.
 //
@@ -48,9 +58,6 @@ type Value interface {
 	Node
 	isValue() // to limit possible type
 }
-
-// Properties are written directly to object map: obj[k] = String(m[k]).
-// Children are not flatten to single array, but written as fields: obj[k] = Object(m[k]) or obj[k] = List(m[k]).
 
 // Object is a representation of generic AST node with fields.
 type Object map[string]Node
@@ -119,16 +126,32 @@ func (m Object) Properties() map[string]Value {
 	return out
 }
 
+// SetProperty is a helper for setting node properties.
+func (m Object) SetProperty(k, v string) Object {
+	m[k] = String(v)
+	return m
+}
+
 // Type is a helper for getting node type (see KeyType).
 func (m Object) Type() string {
 	s, _ := m[KeyType].(String)
 	return string(s)
 }
 
+// SetType is a helper for setting node type (see KeyType).
+func (m Object) SetType(typ string) Object {
+	return m.SetProperty(KeyType, typ)
+}
+
 // Token is a helper for getting node token (see KeyToken).
 func (m Object) Token() string {
 	s, _ := m[KeyToken].(String)
 	return string(s)
+}
+
+// SetToken is a helper for setting node type (see KeyToken).
+func (m Object) SetToken(tok string) Object {
+	return m.SetProperty(KeyToken, tok)
 }
 
 // Roles is a helper for getting node UAST roles (see KeyRoles).
@@ -142,6 +165,12 @@ func (m Object) Roles() []role.Role {
 		}
 	}
 	return out
+}
+
+// SetRoles is a helper for setting node UAST roles (see KeyRoles).
+func (m Object) SetRoles(roles ...role.Role) Object {
+	m[KeyRoles] = RoleList(roles...)
+	return m
 }
 
 // StartPosition returns start position of the node in source file.
