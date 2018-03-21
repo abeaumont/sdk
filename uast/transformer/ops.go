@@ -1,8 +1,12 @@
 package transformer
 
 import (
+	"sort"
+
 	"gopkg.in/bblfsh/sdk.v1/uast"
 )
+
+const allowUnusedFields = false
 
 func noNode(n uast.Node) error {
 	if n == nil {
@@ -120,112 +124,253 @@ func (op opAnd) Construct(st *State, n uast.Node) (uast.Node, error) {
 	return n, nil
 }
 
-// Obj verifies that current node is an object and checks it with provided ops.
-// Reversal changes node type to object and applies a provided operations to it.
-// This operation will populate a list of unprocessed keys for current object,
-// so the transformation code can verify that transform was complete.
-func Obj(ops ...Op) Op {
-	return opObj{op: And(ops...)}
+var _ ObjectOp = Obj{}
+
+// Obj is a helper for defining a transformation on an object fields. See Object.
+// Operations will be sorted by the field name before execution.
+type Obj map[string]Op
+
+func (o Obj) Object() Object {
+	obj := Object{set: make(map[string]struct{})}
+	for k, op := range o {
+		obj.set[k] = struct{}{}
+		obj.fields = append(obj.fields, Field{Name: k, Op: op})
+	}
+	sort.Slice(obj.fields, func(i, j int) bool {
+		return obj.fields[i].Name < obj.fields[j].Name
+	})
+	return obj
+}
+func (o Obj) Check(st *State, n uast.Node) (bool, error) {
+	return o.Object().Check(st, n)
 }
 
-type opObj struct {
-	op Op
+func (o Obj) Construct(st *State, n uast.Node) (uast.Node, error) {
+	return o.Object().Construct(st, n)
 }
 
-func (op opObj) Check(st *State, n uast.Node) (bool, error) {
-	if _, ok := n.(uast.Object); !ok {
+// ObjectOp is an operation that is executed on an object. See Object.
+type ObjectOp interface {
+	Op
+	Object() Object
+}
+
+// Part defines a partial transformation of an object.
+// All unused fields will be stored into variable with a specified name.
+func Part(vr string, o ObjectOp) ObjectOp {
+	obj := o.Object()
+	obj.other = vr
+	return obj
+}
+
+// Pre will execute provided field operation before executing the rest of operations for an object.
+func Pre(fields Fields, o ObjectOp) ObjectOp {
+	obj := o.Object()
+	if err := obj.setFields(fields...); err != nil {
+		panic(err)
+	}
+	arr := make([]Field, len(fields)+len(obj.fields))
+
+	i := copy(arr, fields)
+	copy(arr[i:], obj.fields)
+
+	obj.fields = arr
+	return obj
+}
+
+// Post will execute provided field operation after executing the rest of operations for an object.
+func Post(o ObjectOp, fields Fields) ObjectOp {
+	obj := o.Object()
+	if err := obj.setFields(fields...); err != nil {
+		panic(err)
+	}
+	arr := make([]Field, len(fields)+len(obj.fields))
+
+	i := copy(arr, obj.fields)
+	copy(arr[i:], fields)
+
+	obj.fields = arr
+	return obj
+}
+
+var _ ObjectOp = Fields{}
+
+// Fields is a helper for multiple operations on object fields with a specific execution order. See Object.
+type Fields []Field
+
+func (o Fields) Object() Object {
+	obj := Object{fields: o, set: make(map[string]struct{})}
+	err := obj.setFields(obj.fields...)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+func (o Fields) Check(st *State, n uast.Node) (bool, error) {
+	return o.Object().Check(st, n)
+}
+
+func (o Fields) Construct(st *State, n uast.Node) (uast.Node, error) {
+	return o.Object().Construct(st, n)
+}
+
+// Field is an operation on a specific field of an object.
+type Field struct {
+	Name string // name of the field
+	Op   Op     // operation used to check/construct the field value
+}
+
+// Object verifies that current node is an object and checks its fields with a
+// defined operations. If field does not exist, object will be skipped.
+// Reversal changes node type to object and creates all fields with a specified
+// operations.
+// Implementation will track a list of unprocessed object keys and will return an
+// error in case the field was not used. To preserve all unprocessed keys use Part.
+type Object struct {
+	fields []Field
+	set    map[string]struct{}
+	other  string // preserve other fields
+}
+
+func (o Object) Object() Object {
+	return o
+}
+func (o Object) GetField(k string) (Op, bool) {
+	if _, ok := o.set[k]; !ok {
+		return nil, false
+	}
+	for _, f := range o.fields {
+		if f.Name == k {
+			return f.Op, true
+		}
+	}
+	return nil, false
+}
+func (o Object) SetField(k string, v Op) {
+	if _, ok := o.set[k]; ok {
+		for i, f := range o.fields {
+			if f.Name == k {
+				o.fields[i].Op = v
+				return
+			}
+		}
+	}
+	o.set[k] = struct{}{}
+	o.fields = append(o.fields, Field{Name: k, Op: v})
+}
+func (o *Object) setFields(fields ...Field) error {
+	for _, f := range fields {
+		if _, ok := o.set[f.Name]; ok {
+			return ErrDuplicateField.New(f.Name)
+		}
+		o.set[f.Name] = struct{}{}
+	}
+	return nil
+}
+func (o Object) Check(st *State, n uast.Node) (bool, error) {
+	cur, ok := n.(uast.Object)
+	if !ok {
 		return false, nil
 	}
-	return op.op.Check(st, n)
+	for _, f := range o.fields {
+		n, ok = cur[f.Name]
+		if !ok {
+			return false, nil
+		}
+		ok, err := f.Op.Check(st, n)
+		if err != nil {
+			return false, errKey.Wrap(err, f.Name)
+		} else if !ok {
+			return false, nil
+		}
+	}
+	if o.other == "" {
+		if !allowUnusedFields {
+			for k := range cur {
+				if _, ok := o.set[k]; !ok {
+					return false, ErrUnusedField.New(k)
+				}
+			}
+		}
+		return true, nil
+	}
+	// TODO: consider throwing an error if a transform is defined as partial, but in fact it's not
+	left := make(uast.Object)
+	for k, v := range cur {
+		if _, ok := o.set[k]; !ok {
+			left[k] = v
+		}
+	}
+	err := st.SetVar(o.other, left)
+	return err == nil, err
 }
 
-func (op opObj) Construct(st *State, n uast.Node) (uast.Node, error) {
-	if err := noNode(n); err != nil {
+func (o Object) Construct(st *State, old uast.Node) (uast.Node, error) {
+	if err := noNode(old); err != nil {
 		return nil, err
 	}
-	n = make(uast.Object)
-	return op.op.Construct(st, n)
-}
-
-// Out checks specific object field with an op.
-// Reversal creates a field in an object using provided op. It will also
-// remove the key from the list of unprocessed keys for this specific node.
-func Out(key string, op Op) Op {
-	return opOut{key: key, op: op}
-}
-
-type opOut struct {
-	key string
-	op  Op
-}
-
-func (op opOut) Check(st *State, n uast.Node) (bool, error) {
-	obj, ok := n.(uast.Object)
+	obj := make(uast.Object, len(o.fields))
+	for _, f := range o.fields {
+		v, err := f.Op.Construct(st, nil)
+		if err != nil {
+			return obj, errKey.Wrap(err, f.Name)
+		}
+		obj[f.Name] = v
+	}
+	if o.other == "" {
+		return obj, nil
+	}
+	v, ok := st.GetVar(o.other)
 	if !ok {
-		return false, ErrExpectedObject.New(n)
+		return obj, ErrVariableNotDefined.New(o.other)
 	}
-	n, ok = obj[op.key]
+	left, ok := v.(uast.Object)
 	if !ok {
-		return false, nil
+		return obj, ErrExpectedObject.New(v)
 	}
-	ok, err := op.op.Check(st, n)
-	if err != nil {
-		err = errKey.Wrap(err, op.key)
+	for k, v := range left {
+		obj[k] = v
 	}
-	return ok, err
-}
-
-func (op opOut) Construct(st *State, n uast.Node) (uast.Node, error) {
-	obj, ok := n.(uast.Object)
-	if !ok {
-		return nil, ErrExpectedObject.New(n)
-	}
-	v, err := op.op.Construct(st, nil)
-	if err != nil {
-		return nil, errKey.Wrap(err, op.key)
-	}
-	obj[op.key] = v
 	return obj, nil
 }
 
-// Key is a shorthand for object field with multiple operations on it.
-func Key(key string, ops ...Op) Op {
-	return Out(key, And(ops...))
+// String asserts that value equals a specific string value.
+func String(val string) Op {
+	return Is(uast.String(val))
 }
 
-// Has asserts that field has a specific value.
-func Has(key string, val uast.Value) Op {
-	return Out(key, Is(val))
-}
-
-// HasType is a shorthand for checking type field.
-func HasType(typ string) Op {
-	return Has(uast.KeyType, uast.String(typ))
+// Int asserts that value equals a specific integer value.
+func Int(val int) Op {
+	return Is(uast.Int(val))
 }
 
 // TypedObj is a shorthand for an object with a specific type
 // and multiples operations on it.
-func TypedObj(typ string, ops ...Op) Op {
-	return Obj(append([]Op{
-		HasType(typ),
-	}, ops...)...)
+func TypedObj(typ string, ops map[string]Op) Op {
+	obj := Obj(ops)
+	obj[uast.KeyType] = String(typ)
+	return obj
 }
 
-// Save stores field into a variable.
-func Save(key string, vr string) Op {
-	return Out(key, Var(vr))
+// ArrayOp is a subset of operations that operates on an arrays with a pre-defined size. See Arr.
+type ArrayOp interface {
+	Op
+	arr() opArr
 }
 
 // Arr checks if the current object is a list with a number of elements
 // matching a number of ops, and applies ops to corresponding elements.
 // Reversal creates a list of the size that matches the number of ops
 // and creates each element with the corresponding op.
-func Arr(ops ...Op) Op {
+func Arr(ops ...Op) ArrayOp {
 	return opArr(ops)
 }
 
 type opArr []Op
 
+func (op opArr) arr() opArr {
+	return op
+}
 func (op opArr) Check(st *State, n uast.Node) (bool, error) {
 	arr, ok := n.(uast.List)
 	if !ok {
@@ -319,4 +464,124 @@ func (op opLookup) Construct(st *State, n uast.Node) (uast.Node, error) {
 // LookupVar is a shorthand to lookup value stored in variable.
 func LookupVar(vr string, m map[uast.Value]uast.Value) Op {
 	return Lookup(Var(vr), m)
+}
+
+// LookupOpVar is a conditional branch that takes a value of a variable and
+// checks the map to find an appropriate operation to apply to current node.
+// Note that the variable must be defined prior to this transformation, thus
+// You might need to use Pre to define a variable used in this condition.
+func LookupOpVar(vr string, cases map[uast.Value]Op) Op {
+	return opLookupOp{vr: vr, cases: cases}
+}
+
+type opLookupOp struct {
+	vr    string
+	cases map[uast.Value]Op
+}
+
+func (op opLookupOp) eval(st *State, n uast.Node) (Op, error) {
+	vn, ok := st.GetVar(op.vr)
+	if !ok {
+		return nil, ErrVariableNotDefined.New(op.vr)
+	}
+	v, ok := vn.(uast.Value)
+	if !ok {
+		return nil, ErrExpectedValue.New(vn)
+	}
+	sub, ok := op.cases[v]
+	if !ok {
+		return nil, ErrUnhandledValue.New(v)
+	}
+	return sub, nil
+}
+
+func (op opLookupOp) Check(st *State, n uast.Node) (bool, error) {
+	sub, err := op.eval(st, n)
+	if err != nil {
+		return false, err
+	}
+	return sub.Check(st, n)
+}
+
+func (op opLookupOp) Construct(st *State, n uast.Node) (uast.Node, error) {
+	sub, err := op.eval(st, n)
+	if err != nil {
+		return nil, err
+	}
+	return sub.Construct(st, n)
+}
+
+// Append asserts that a node is a List and checks that it contains a defined set of nodes at the end.
+// Reversal uses sub-operation to create a List and appends provided element lists at the end of it.
+func Append(to Op, items ...ArrayOp) Op {
+	if len(items) == 0 {
+		return to
+	}
+	arrs := make([]opArr, 0, len(items))
+	for _, arr := range items {
+		arrs = append(arrs, arr.arr())
+	}
+	return opAppend{op: to, arrs: arrs}
+}
+
+type opAppend struct {
+	op   Op
+	arrs []opArr
+}
+
+func (op opAppend) Check(st *State, n uast.Node) (bool, error) {
+	arr, ok := n.(uast.List)
+	if !ok {
+		return false, nil
+	}
+	tail := 0
+	for _, sub := range op.arrs {
+		tail += len(sub)
+	}
+	if tail > len(arr) {
+		return false, nil
+	}
+	tail = len(arr) - tail // recalculate as index
+	// split into array part that will go to sub op,
+	// and the part we will use for sub-array checks
+	sub, arrs := arr[:tail], arr[tail:]
+	if ok, err := op.op.Check(st, sub); err != nil {
+		return false, err
+	} else if !ok {
+		return false, nil
+	}
+	for i, sub := range op.arrs {
+		cur := arrs[:len(sub)]
+		arrs = arrs[len(sub):]
+		if ok, err := sub.Check(st, cur); err != nil {
+			return false, errElem.Wrap(err, i, sub)
+		} else if !ok {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (op opAppend) Construct(st *State, n uast.Node) (uast.Node, error) {
+	n, err := op.op.Construct(st, n)
+	if err != nil {
+		return nil, err
+	}
+	arr, ok := n.(uast.List)
+	if !ok {
+		return nil, ErrExpectedList.New(n)
+	}
+	arr = append(uast.List{}, arr...)
+	for i, sub := range op.arrs {
+		nn, err := sub.Construct(st, nil)
+		if err != nil {
+			return nil, errElem.Wrap(err, i, sub)
+		}
+		arr2, ok := nn.(uast.List)
+		if !ok {
+			return nil, errElem.Wrap(ErrExpectedList.New(n), i, sub)
+		}
+		arr = append(arr, arr2...)
+	}
+	return arr, nil
 }

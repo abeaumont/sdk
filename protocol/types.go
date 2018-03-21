@@ -227,7 +227,7 @@ func NewNode() *Node {
 // String converts the *Node to a string using pretty printing.
 func (n *Node) String() string {
 	buf := bytes.NewBuffer(nil)
-	err := Pretty(n, buf, uast.IncludeAll)
+	err := Pretty(n, buf, IncludeAll)
 	if err != nil {
 		return "error"
 	}
@@ -259,6 +259,8 @@ func ToNode(n uast.Node) (*Node, error) {
 
 func asNode(n uast.Node, field string) ([]*Node, error) {
 	switch n := n.(type) {
+	case nil:
+		return asNode(uast.NewNode(), "")
 	case uast.List:
 		var arr []*Node
 		for _, s := range n {
