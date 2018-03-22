@@ -1,5 +1,9 @@
 package role
 
+import (
+	"strings"
+)
+
 //go:generate proteus  -f $GOPATH/src -p gopkg.in/bblfsh/sdk.v1/uast/role
 
 // Role is the main UAST annotation. It indicates that a node in an AST can
@@ -8,6 +12,26 @@ package role
 //proteus:generate
 //go:generate stringer -type=Role
 type Role int16
+
+// FromString converts a string representation of the Role to its numeric value.
+func FromString(s string) Role {
+	names := _Role_name
+	off := 0
+	for {
+		i := strings.Index(names, s)
+		if i < 0 {
+			return Invalid
+		}
+		for ind, pos := range _Role_index {
+			if off+i == int(pos) {
+				return Role(ind)
+			}
+		}
+		dn := i + len(s)
+		off += dn
+		names = names[dn:]
+	}
+}
 
 const (
 	// Invalid Role is assigned as a zero value since protobuf enum definition must start at 0.
