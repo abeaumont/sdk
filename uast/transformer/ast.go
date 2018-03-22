@@ -23,6 +23,9 @@ func Roles(roles ...role.Role) ArrayOp {
 
 // AppendRoles can be used to append more roles to an output of a specific operation.
 func AppendRoles(old Op, roles ...role.Role) Op {
+	if len(roles) == 0 {
+		return old
+	}
 	return Append(old, Roles(roles...))
 }
 
@@ -34,5 +37,24 @@ func ASTMap(name string, native, norm Op) Mapping {
 			{Name: "native", Op: native},
 			{Name: "norm", Op: norm},
 		},
+	}
+}
+
+// RolesField will create a roles field that appends provided roles to existing ones.
+// In case no roles are provided, it will save existing roles, if any.
+func RolesField(vr string, roles ...role.Role) Field {
+	if len(roles) == 0 {
+		return Field{
+			Name:     uast.KeyRoles,
+			Op:       Var(vr),
+			Optional: vr + "_exists",
+		}
+	}
+	return Field{
+		Name: uast.KeyRoles,
+		Op: If(vr+"_exists",
+			AppendRoles(NotEmpty(Var(vr)), roles...),
+			Roles(roles...),
+		),
 	}
 }

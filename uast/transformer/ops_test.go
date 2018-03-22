@@ -240,6 +240,99 @@ var opCases = []struct {
 			}
 		},
 	},
+	{
+		name: "each",
+		inp: func() u.Node {
+			return u.List{
+				u.Object{"t": u.String("a"), "v": u.Int(1)},
+				u.Object{"t": u.String("a"), "v": u.Int(2)},
+				u.Object{"t": u.String("a"), "v": u.Int(3)},
+			}
+		},
+		src: Each("objs", Part("part", Obj{
+			"v": Var("val"),
+		})),
+		dst: Each("objs", Part("part", Obj{
+			"v2": Var("val"),
+		})),
+		exp: func() u.Node {
+			return u.List{
+				u.Object{"t": u.String("a"), "v2": u.Int(1)},
+				u.Object{"t": u.String("a"), "v2": u.Int(2)},
+				u.Object{"t": u.String("a"), "v2": u.Int(3)},
+			}
+		},
+	},
+	{
+		name: "optional field",
+		inp: func() u.Node {
+			return u.Object{
+				"t": u.String("a"),
+			}
+		},
+		src: Fields{
+			{Name: "t", Op: String("a")},
+			{Name: "v", Op: Var("val"), Optional: "exists"},
+		},
+	},
+	{
+		name: "optional nil field",
+		inp: func() u.Node {
+			return u.Object{
+				"t": u.String("a"),
+				"v": nil,
+			}
+		},
+		src: Fields{
+			{Name: "t", Op: String("a")},
+			{Name: "v", Op: Opt("exists", Var("val"))},
+		},
+	},
+	{
+		name: "roles field",
+		inp: func() u.Node {
+			return u.Object{
+				u.KeyType: u.String("node"),
+			}
+		},
+		src: Fields{
+			{Name: u.KeyType, Op: String("node")},
+			RolesField("roles"),
+		},
+		dst: Fields{
+			{Name: u.KeyType, Op: String("node")},
+			RolesField("roles", 1),
+		},
+		exp: func() u.Node {
+			return u.Object{
+				u.KeyType:  u.String("node"),
+				u.KeyRoles: u.RoleList(1),
+			}
+		},
+	},
+	{
+		name: "roles field exists",
+		inp: func() u.Node {
+			return u.Object{
+				u.KeyType:  u.String("node"),
+				u.KeyRoles: u.RoleList(2),
+			}
+		},
+		src: Fields{
+			{Name: u.KeyType, Op: String("node")},
+			RolesField("roles"),
+		},
+		dst: Fields{
+			{Name: u.KeyType, Op: String("node")},
+			RolesField("roles", 1),
+		},
+		exp: func() u.Node {
+			return u.Object{
+				u.KeyType:  u.String("node"),
+				u.KeyRoles: u.RoleList(2, 1),
+			}
+		},
+	},
 }
 
 func TestOps(t *testing.T) {
@@ -247,27 +340,41 @@ func TestOps(t *testing.T) {
 		if c.exp == nil {
 			c.exp = c.inp
 		}
+		if c.dst == nil {
+			c.dst = c.src
+		}
 		t.Run(c.name, func(t *testing.T) {
 			m := Map("test", c.src, c.dst)
-			inp := c.inp()
-			out, err := m.Do(inp)
-			if c.err != nil {
-				require.True(t, c.err.Is(err), "expected %v, got %v", c.err, err)
-				return
+
+			do := func(m Mapping, er *errors.Kind, inpf, expf func() u.Node) bool {
+				inp := inpf()
+				out, err := m.Do(inp)
+				if er != nil {
+					require.True(t, er.Is(err), "expected %v, got %v", er, err)
+					return false
+				}
+				require.NoError(t, err)
+				require.Equal(t, expf(), out, "transformation failed")
+				require.Equal(t, inpf(), inp, "transformation should clone the value")
+				return true
 			}
-			require.NoError(t, err)
-			require.Equal(t, c.exp(), out)
-			require.Equal(t, c.inp(), inp, "operation should clone the value")
+			// test full transformation first
+			if !do(m, c.err, c.inp, c.exp) {
+				return // expected error case
+			}
 			if c.noRev {
 				return
 			}
-			m = m.Reverse()
+			// test reverse transformation
+			do(m.Reverse(), nil, c.exp, c.inp)
 
-			inp = c.exp()
-			out, err = m.Do(inp)
-			require.NoError(t, err)
-			require.Equal(t, c.inp(), out)
-			require.Equal(t, c.exp(), inp, "operation should clone the value")
+			// test identity transform (forward)
+			m = Map("test", c.src, c.src)
+			do(m, nil, c.inp, c.inp)
+
+			// test identity transform (reverse)
+			m = Map("test", c.dst, c.dst)
+			do(m, nil, c.exp, c.exp)
 		})
 	}
 }
