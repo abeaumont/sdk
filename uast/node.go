@@ -46,6 +46,7 @@ func EmptyNode() Object {
 type Node interface {
 	// Clone creates a deep copy of the node.
 	Clone() Node
+	Native() interface{}
 	isNode() // to limit possible types
 }
 
@@ -57,7 +58,6 @@ type Node interface {
 //	* Bool
 type Value interface {
 	Node
-	Native() interface{}
 	isValue() // to limit possible types
 }
 
@@ -65,6 +65,21 @@ type Value interface {
 type Object map[string]Node
 
 func (Object) isNode() {}
+
+func (m Object) Native() interface{} {
+	if m == nil {
+		return nil
+	}
+	o := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		if v != nil {
+			o[k] = v.Native()
+		} else {
+			o[k] = nil
+		}
+	}
+	return o
+}
 
 // Keys returns a sorted list of node keys.
 func (m Object) Keys() []string {
@@ -193,6 +208,21 @@ func (m Object) EndPosition() *Position {
 type List []Node
 
 func (List) isNode() {}
+
+func (m List) Native() interface{} {
+	if m == nil {
+		return nil
+	}
+	o := make([]interface{}, 0, len(m))
+	for _, v := range m {
+		if v != nil {
+			o = append(o, v.Native())
+		} else {
+			o = append(o, nil)
+		}
+	}
+	return o
+}
 
 func (m List) Clone() Node {
 	out := make(List, 0, len(m))
