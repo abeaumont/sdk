@@ -247,16 +247,16 @@ type Object struct {
 func (o Object) Object() Object {
 	return o
 }
-func (o Object) GetField(k string) (Op, bool) {
+func (o Object) GetField(k string) (Field, bool) {
 	if _, ok := o.set[k]; !ok {
-		return nil, false
+		return Field{}, false
 	}
 	for _, f := range o.fields {
 		if f.Name == k {
-			return f.Op, true
+			return f, true
 		}
 	}
-	return nil, false
+	return Field{}, false
 }
 func (o *Object) SetField(k string, v Op) {
 	o.SetFieldObj(Field{Name: k, Op: v})
@@ -368,6 +368,10 @@ func (o Object) Construct(st *State, old uast.Node) (uast.Node, error) {
 		return obj, ErrExpectedObject.New(v)
 	}
 	for k, v := range left {
+		if v2, ok := obj[k]; ok {
+			return nil, fmt.Errorf("trying to overwrite already set field with partial pbject data: %q: %v = %v",
+				k, v2, v)
+		}
 		obj[k] = v
 	}
 	return obj, nil
@@ -394,7 +398,7 @@ func TypedObj(typ string, ops map[string]Op) Op {
 // ArrayOp is a subset of operations that operates on an arrays with a pre-defined size. See Arr.
 type ArrayOp interface {
 	Op
-	arr() opArr
+	arr(st *State) (opArr, error)
 }
 
 // Arr checks if the current object is a list with a number of elements
@@ -407,8 +411,8 @@ func Arr(ops ...Op) ArrayOp {
 
 type opArr []Op
 
-func (op opArr) arr() opArr {
-	return op
+func (op opArr) arr(_ *State) (opArr, error) {
+	return op, nil
 }
 func (op opArr) Check(st *State, n uast.Node) (bool, error) {
 	arr, ok := n.(uast.List)
@@ -518,7 +522,7 @@ type opLookupOp struct {
 	cases map[uast.Value]Op
 }
 
-func (op opLookupOp) eval(st *State, n uast.Node) (Op, error) {
+func (op opLookupOp) eval(st *State) (Op, error) {
 	vn, err := st.MustGetVar(op.vr)
 	if err != nil {
 		return nil, err
@@ -535,7 +539,7 @@ func (op opLookupOp) eval(st *State, n uast.Node) (Op, error) {
 }
 
 func (op opLookupOp) Check(st *State, n uast.Node) (bool, error) {
-	sub, err := op.eval(st, n)
+	sub, err := op.eval(st)
 	if err != nil {
 		return false, err
 	}
@@ -543,29 +547,67 @@ func (op opLookupOp) Check(st *State, n uast.Node) (bool, error) {
 }
 
 func (op opLookupOp) Construct(st *State, n uast.Node) (uast.Node, error) {
-	sub, err := op.eval(st, n)
+	sub, err := op.eval(st)
 	if err != nil {
 		return nil, err
 	}
 	return sub.Construct(st, n)
 }
 
-// Append asserts that a node is a List and checks that it contains a defined set of nodes at the end.
-// Reversal uses sub-operation to create a List and appends provided element lists at the end of it.
+// LookupArrOpVar is like LookupOpVar but returns an array operation.
+func LookupArrOpVar(vr string, cases map[uast.Value]ArrayOp) ArrayOp {
+	return opLookupArrOp{vr: vr, cases: cases}
+}
+
+type opLookupArrOp struct {
+	vr    string
+	cases map[uast.Value]ArrayOp
+}
+
+func (op opLookupArrOp) arr(st *State) (opArr, error) {
+	vn, err := st.MustGetVar(op.vr)
+	if err != nil {
+		return nil, err
+	}
+	v, ok := vn.(uast.Value)
+	if !ok {
+		return nil, ErrExpectedValue.New(vn)
+	}
+	sub, ok := op.cases[v]
+	if !ok {
+		return nil, ErrUnhandledValueIn.New(v, op.cases)
+	}
+	return sub.arr(st)
+}
+
+func (op opLookupArrOp) Check(st *State, n uast.Node) (bool, error) {
+	sub, err := op.arr(st)
+	if err != nil {
+		return false, err
+	}
+	return sub.Check(st, n)
+}
+
+func (op opLookupArrOp) Construct(st *State, n uast.Node) (uast.Node, error) {
+	sub, err := op.arr(st)
+	if err != nil {
+		return nil, err
+	}
+	return sub.Construct(st, n)
+}
+
+// Append is like AppendArr but allows to set more complex first operation.
+// Result of this operation should still be an array.
 func Append(to Op, items ...ArrayOp) Op {
 	if len(items) == 0 {
 		return to
 	}
-	arrs := make([]opArr, 0, len(items))
-	for _, arr := range items {
-		arrs = append(arrs, arr.arr())
-	}
-	return opAppend{op: to, arrs: arrs}
+	return opAppend{op: to, arrs: opAppendArr{arrs: items}}
 }
 
 type opAppend struct {
 	op   Op
-	arrs []opArr
+	arrs opAppendArr
 }
 
 func (op opAppend) Check(st *State, n uast.Node) (bool, error) {
@@ -573,16 +615,16 @@ func (op opAppend) Check(st *State, n uast.Node) (bool, error) {
 	if !ok {
 		return filtered("%+v is not a list, %+v", n, op)
 	}
-	tail := 0
-	for _, sub := range op.arrs {
-		tail += len(sub)
+	sarr, err := op.arrs.arr(st)
+	if err != nil {
+		return false, err
 	}
-	if tail > len(arr) {
+	if len(sarr) > len(arr) {
 		return filtered("array %+v is too small for %+v", n, op)
 	}
-	tail = len(arr) - tail // recalculate as index
 	// split into array part that will go to sub op,
 	// and the part we will use for sub-array checks
+	tail := len(arr) - len(sarr)
 	sub, arrs := arr[:tail], arr[tail:]
 	if len(sub) == 0 {
 		sub = nil
@@ -592,16 +634,7 @@ func (op opAppend) Check(st *State, n uast.Node) (bool, error) {
 	} else if !ok {
 		return false, nil
 	}
-	for i, sub := range op.arrs {
-		cur := arrs[:len(sub)]
-		arrs = arrs[len(sub):]
-		if ok, err := sub.Check(st, cur); err != nil {
-			return false, errElem.Wrap(err, i, sub)
-		} else if !ok {
-			return false, nil
-		}
-	}
-	return true, nil
+	return sarr.Check(st, arrs)
 }
 
 func (op opAppend) Construct(st *State, n uast.Node) (uast.Node, error) {
@@ -613,19 +646,61 @@ func (op opAppend) Construct(st *State, n uast.Node) (uast.Node, error) {
 	if !ok {
 		return nil, ErrExpectedList.New(n)
 	}
-	arr = append(uast.List{}, arr...)
-	for i, sub := range op.arrs {
-		nn, err := sub.Construct(st, nil)
+	sarr, err := op.arrs.arr(st)
+	if err != nil {
+		return nil, err
+	}
+	nn, err := sarr.Construct(st, nil)
+	if err != nil {
+		return nil, err
+	}
+	arr2, ok := nn.(uast.List)
+	if !ok {
+		return nil, ErrExpectedList.New(n)
+	}
+	arr = append(arr, arr2...)
+	return arr, nil
+}
+
+// Append asserts that a node is a List and checks that it contains a defined set of nodes at the end.
+// Reversal uses sub-operation to create a List and appends provided element lists at the end of it.
+func AppendArr(items ...ArrayOp) ArrayOp {
+	if len(items) == 1 {
+		return items[0]
+	}
+	return opAppendArr{arrs: items}
+}
+
+type opAppendArr struct {
+	arrs []ArrayOp
+}
+
+func (op opAppendArr) arr(st *State) (opArr, error) {
+	var arr opArr
+	for _, sub := range op.arrs {
+		a, err := sub.arr(st)
 		if err != nil {
-			return nil, errElem.Wrap(err, i, sub)
+			return nil, err
 		}
-		arr2, ok := nn.(uast.List)
-		if !ok {
-			return nil, errElem.Wrap(ErrExpectedList.New(n), i, sub)
-		}
-		arr = append(arr, arr2...)
+		arr = append(arr, a...)
 	}
 	return arr, nil
+}
+
+func (op opAppendArr) Check(st *State, n uast.Node) (bool, error) {
+	sarr, err := op.arr(st)
+	if err != nil {
+		return false, err
+	}
+	return sarr.Check(st, n)
+}
+
+func (op opAppendArr) Construct(st *State, n uast.Node) (uast.Node, error) {
+	sarr, err := op.arr(st)
+	if err != nil {
+		return nil, err
+	}
+	return sarr.Construct(st, n)
 }
 
 type ValueFunc func(uast.Value) (uast.Value, error)

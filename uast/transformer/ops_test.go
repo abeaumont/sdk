@@ -37,6 +37,7 @@ var opCases = []struct {
 	inp, exp func() u.Node
 	src, dst Op
 	err      *errors.Kind
+	skip     bool
 	noRev    bool // should only be set in exceptional cases
 }{
 	{
@@ -334,7 +335,30 @@ var opCases = []struct {
 		},
 	},
 	{
-		name: "roles field nil",
+		name: "roles field empty", skip: true, // TODO: track empty vs nil
+		inp: func() u.Node {
+			return u.Object{
+				u.KeyType:  u.String("node"),
+				u.KeyRoles: u.RoleList(),
+			}
+		},
+		src: Fields{
+			{Name: u.KeyType, Op: String("node")},
+			RolesField("roles"),
+		},
+		dst: Fields{
+			{Name: u.KeyType, Op: String("node")},
+			RolesField("roles", 1),
+		},
+		exp: func() u.Node {
+			return u.Object{
+				u.KeyType:  u.String("node"),
+				u.KeyRoles: u.RoleList(1),
+			}
+		},
+	},
+	{
+		name: "roles field nil", skip: true, // TODO: track empty vs nil
 		inp: func() u.Node {
 			return u.Object{
 				u.KeyType:  u.String("node"),
@@ -367,6 +391,9 @@ func TestOps(t *testing.T) {
 			c.dst = c.src
 		}
 		t.Run(c.name, func(t *testing.T) {
+			if c.skip {
+				t.SkipNow()
+			}
 			m := Map("test", c.src, c.dst)
 
 			do := func(m Mapping, er *errors.Kind, inpf, expf func() u.Node) bool {
