@@ -11,6 +11,15 @@ type Transformer interface {
 	Do(n uast.Node) (uast.Node, error)
 }
 
+// Transformers appends all provided transformer slices into single one.
+func Transformers(arr ...[]Transformer) []Transformer {
+	var out []Transformer
+	for _, a := range arr {
+		out = append(out, a...)
+	}
+	return out
+}
+
 var _ Transformer = (TransformFunc)(nil)
 
 type TransformFunc func(n uast.Node) (uast.Node, bool, error)

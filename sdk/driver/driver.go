@@ -14,7 +14,6 @@ type Mode int
 
 const (
 	ModeAST = Mode(iota)
-	ModeRoles
 )
 
 // Transforms describes a set of AST transformations this driver requires.
@@ -28,8 +27,6 @@ type Transforms struct {
 	// Code transforms are applied directly after Native and provide a way
 	// to extract more information from source files, fix positional info, etc.
 	Code []transformer.CodeTransformer
-	// Roles transforms annotate the native AST tree with UAST roles.
-	Roles []transformer.Transformer
 }
 
 // Do applies AST transformation pipeline for specified nodes.
@@ -47,14 +44,6 @@ func (t Transforms) Do(mode Mode, code string, nd uast.Node) (uast.Node, error) 
 		nd, err = t.Do(nd)
 		if err != nil {
 			return nd, err
-		}
-	}
-	if mode >= ModeRoles {
-		for _, t := range t.Roles {
-			nd, err = t.Do(nd)
-			if err != nil {
-				return nd, err
-			}
 		}
 	}
 	return nd, nil
@@ -128,7 +117,7 @@ func (d *Driver) Parse(req *protocol.ParseRequest) *protocol.ParseResponse {
 		addErr(err)
 		return r
 	}
-	nd, err = d.t.Do(ModeRoles, code, nd)
+	nd, err = d.t.Do(ModeAST, code, nd)
 	if err != nil {
 		addErr(err)
 		return r

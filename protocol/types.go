@@ -9,7 +9,8 @@
 // License for the specific language governing permissions and limitations under
 // the License.
 
-//go:generate proteus  -f $GOPATH/src -p gopkg.in/bblfsh/sdk.v1/protocol -p gopkg.in/bblfsh/sdk.v1/uast
+// go:generate proteus  -f $GOPATH/src -p gopkg.in/bblfsh/sdk.v1/protocol -p gopkg.in/bblfsh/sdk.v1/uast -p gopkg.in/bblfsh/sdk.v1/uast/role
+//go:generate protoc --proto_path=$GOPATH/src:. --gogo_out=plugins=grpc:. ./generated.proto
 //go:generate stringer -type=Status,Encoding -output stringer.go
 
 package protocol

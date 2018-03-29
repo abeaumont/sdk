@@ -35,14 +35,17 @@ func TestDriverParserParse(t *testing.T) {
 	require.Equal("fixture", r.Language)
 	require.Equal("foo.f", r.Filename)
 	require.True(r.Elapsed.Nanoseconds() > 0)
-	require.Equal(" "+
-		"{\n"+
-		".  Roles: Unannotated\n"+
-		".  Properties: {\n"+
-		".  .  key: val\n"+
-		".  }\n"+
-		"}\n",
-		r.UAST.String())
+	require.Equal(` {
+.  Children: {
+.  .  0:  {
+.  .  .  Properties: {
+.  .  .  .  internalRole: root
+.  .  .  .  key: val
+.  .  .  }
+.  .  }
+.  }
+}
+`, r.UAST.String())
 
 	err = d.Stop()
 	require.NoError(err)

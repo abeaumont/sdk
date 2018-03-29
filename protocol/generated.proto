@@ -4,10 +4,13 @@ package gopkg.in.bblfsh.sdk.v1.protocol;
 import "github.com/gogo/protobuf/gogoproto/gogo.proto";
 import "google/protobuf/duration.proto";
 import "gopkg.in/bblfsh/sdk.v1/uast/generated.proto";
+import "gopkg.in/bblfsh/sdk.v1/uast/role/generated.proto";
 import "google/protobuf/timestamp.proto";
 
 option (gogoproto.protosizer_all) = true;
 option (gogoproto.sizer_all) = false;
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.unmarshaler_all) =  true;
 option go_package = "protocol";
 
 // NativeParseRequest is a request to parse a file and get its native AST.
@@ -44,6 +47,7 @@ message Node {
 	string token = 4;
 	gopkg.in.bblfsh.sdk.v1.uast.Position start_position = 5;
 	gopkg.in.bblfsh.sdk.v1.uast.Position end_position = 6;
+	repeated gopkg.in.bblfsh.sdk.v1.uast.role.Role roles = 7;
 }
 
 // ParseRequest is a request to parse a file and get its UAST.
