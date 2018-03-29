@@ -11,6 +11,23 @@ type Transformer interface {
 	Do(n uast.Node) (uast.Node, error)
 }
 
+type CodeTransformer interface {
+	OnCode(code string) Transformer
+}
+
+type Sel interface {
+	Check(st *State, n uast.Node) (bool, error)
+}
+
+type Mod interface {
+	Construct(st *State, n uast.Node) (uast.Node, error)
+}
+
+type Op interface {
+	Sel
+	Mod
+}
+
 // Transformers appends all provided transformer slices into single one.
 func Transformers(arr ...[]Transformer) []Transformer {
 	var out []Transformer
@@ -33,7 +50,6 @@ func (f TransformFunc) Do(n uast.Node) (uast.Node, error) {
 			return n, false
 		} else if !ok {
 			return n, false
-
 		}
 		return nn, ok
 	})
@@ -41,10 +57,6 @@ func (f TransformFunc) Do(n uast.Node) (uast.Node, error) {
 		return nn, last
 	}
 	return n, last
-}
-
-type CodeTransformer interface {
-	OnCode(code string) Transformer
 }
 
 var (
@@ -103,7 +115,20 @@ func (m Mapping) Reverse() Mapping {
 
 func applyMap(src, dst Op, n uast.Node) (uast.Node, error) {
 	var errs []error
+	_, objOp := src.(ObjectOp)
+	_, arrOp := src.(ArrayOp)
 	nn, ok := uast.Apply(n, func(n uast.Node) (uast.Node, bool) {
+		if n != nil {
+			if objOp {
+				if _, ok := n.(uast.Object); !ok {
+					return n, false
+				}
+			} else if arrOp {
+				if _, ok := n.(uast.List); !ok {
+					return n, false
+				}
+			}
+		}
 		st := NewState()
 		if ok, err := src.Check(st, n); err != nil {
 			errs = append(errs, errCheck.Wrap(err))
@@ -149,10 +174,7 @@ func (m Mapping) Do(n uast.Node) (uast.Node, error) {
 // It stores variables, flags and anything that necessary
 // for transformation steps to persist data.
 func NewState() *State {
-	return &State{
-		vars:   make(map[string]uast.Node),
-		states: make(map[string][]*State),
-	}
+	return &State{}
 }
 
 type procObject struct {
@@ -168,8 +190,14 @@ type State struct {
 
 func (st *State) Clone() *State {
 	st2 := NewState()
+	if len(st.vars) != 0 {
+		st2.vars = make(map[string]uast.Node)
+	}
 	for k, v := range st.vars {
 		st2.vars[k] = v
+	}
+	if len(st.states) != 0 {
+		st2.states = make(map[string][]*State)
 	}
 	for k, v := range st.states {
 		st2.states[k] = v
@@ -180,10 +208,16 @@ func (st *State) Clone() *State {
 }
 
 func (st *State) ApplyFrom(st2 *State) {
+	if len(st2.vars) != 0 && st.vars == nil {
+		st.vars = make(map[string]uast.Node)
+	}
 	for k, v := range st2.vars {
 		if _, ok := st.vars[k]; !ok {
 			st.vars[k] = v
 		}
+	}
+	if len(st2.states) != 0 && st.states == nil {
+		st.states = make(map[string][]*State)
 	}
 	for k, v := range st2.states {
 		if _, ok := st.states[k]; !ok {
@@ -212,6 +246,9 @@ func (st *State) SetVar(name string, val uast.Node) error {
 	cur, ok := st.vars[name]
 	if !ok {
 		// not declared
+		if st.vars == nil {
+			st.vars = make(map[string]uast.Node)
+		}
 		st.vars[name] = val
 		return nil
 	}
@@ -234,6 +271,9 @@ func (st *State) SetStateVar(name string, sub []*State) error {
 	cur, ok := st.states[name]
 	if ok {
 		return ErrVariableRedeclared.New(name, cur, sub)
+	}
+	if st.states == nil {
+		st.states = make(map[string][]*State)
 	}
 	st.states[name] = sub
 	return nil
@@ -268,17 +308,4 @@ func (st *State) UseKey(key string, val uast.Node) {
 	}
 	cur := st.objs[len(st.objs)-1]
 	cur.fields[key] = val
-}
-
-type Sel interface {
-	Check(st *State, n uast.Node) (bool, error)
-}
-
-type Mod interface {
-	Construct(st *State, n uast.Node) (uast.Node, error)
-}
-
-type Op interface {
-	Sel
-	Mod
 }

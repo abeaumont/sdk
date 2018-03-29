@@ -17,6 +17,8 @@ var (
 	ErrUnsupported          = errors.NewKind("unsupported: %s")
 )
 
+const applySort = false
+
 // Special field keys for Object
 const (
 	KeyType  = "@type"  // InternalType
@@ -94,7 +96,11 @@ func (m Object) Keys() []string {
 func (m Object) Clone() Node {
 	out := make(Object, len(m))
 	for k, v := range m {
-		out[k] = v.Clone()
+		if v != nil {
+			out[k] = v.Clone()
+		} else {
+			out[k] = nil
+		}
 	}
 	return out
 }
@@ -349,13 +355,24 @@ func Apply(root Node, apply func(n Node) (Node, bool)) (Node, bool) {
 	switch n := root.(type) {
 	case Object:
 		var nn Object
-		for _, k := range n.Keys() {
-			v := n[k]
-			if nv, ok := Apply(v, apply); ok {
-				if nn == nil {
-					nn = n.CloneObject()
+		if applySort {
+			for _, k := range n.Keys() {
+				v := n[k]
+				if nv, ok := Apply(v, apply); ok {
+					if nn == nil {
+						nn = n.CloneObject()
+					}
+					nn[k] = nv
 				}
-				nn[k] = nv
+			}
+		} else {
+			for k, v := range n {
+				if nv, ok := Apply(v, apply); ok {
+					if nn == nil {
+						nn = n.CloneObject()
+					}
+					nn[k] = nv
+				}
 			}
 		}
 		if nn != nil {

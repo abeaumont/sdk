@@ -142,14 +142,15 @@ var _ ObjectOp = Obj{}
 type Obj map[string]Op
 
 func (o Obj) Object() Object {
-	obj := Object{set: make(map[string]struct{})}
+	obj := Object{
+		set:    make(map[string]struct{}, len(o)),
+		fields: make(Fields, 0, len(o)),
+	}
 	for k, op := range o {
 		obj.set[k] = struct{}{}
 		obj.fields = append(obj.fields, Field{Name: k, Op: op})
 	}
-	sort.Slice(obj.fields, func(i, j int) bool {
-		return obj.fields[i].Name < obj.fields[j].Name
-	})
+	sort.Sort(ByFieldName(obj.fields))
 	return obj
 }
 func (o Obj) Check(st *State, n uast.Node) (bool, error) {
@@ -225,6 +226,20 @@ func (o Fields) Construct(st *State, n uast.Node) (uast.Node, error) {
 	return o.Object().Construct(st, n)
 }
 
+type ByFieldName []Field
+
+func (arr ByFieldName) Len() int {
+	return len(arr)
+}
+
+func (arr ByFieldName) Less(i, j int) bool {
+	return arr[i].Name < arr[j].Name
+}
+
+func (arr ByFieldName) Swap(i, j int) {
+	arr[i], arr[j] = arr[j], arr[i]
+}
+
 // Field is an operation on a specific field of an object.
 type Field struct {
 	Name     string // name of the field
@@ -288,7 +303,10 @@ func (o *Object) setFields(fields ...Field) error {
 func (o Object) Check(st *State, n uast.Node) (bool, error) {
 	cur, ok := n.(uast.Object)
 	if !ok {
-		return filtered("%+v is not an object\n%+v", n, o)
+		if errorOnFilterCheck {
+			return filtered("%+v is not an object\n%+v", n, o)
+		}
+		return false, nil
 	}
 	for _, f := range o.fields {
 		n, ok := cur[f.Name]
@@ -301,7 +319,10 @@ func (o Object) Check(st *State, n uast.Node) (bool, error) {
 			if f.Optional != "" {
 				continue
 			}
-			return filtered("field %+v is missing in %+v\n%+v", f, n, o)
+			if errorOnFilterCheck {
+				return filtered("field %+v is missing in %+v\n%+v", f, n, o)
+			}
+			return false, nil
 		}
 		ok, err := f.Op.Check(st, n)
 		if err != nil {
